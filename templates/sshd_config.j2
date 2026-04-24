@@ -1,0 +1,54 @@
+# /etc/ssh/sshd_config — managed by Ansible, do not edit manually.
+# OpenSSH server configuration — Debian 13 hardened profile.
+
+# ── Network ────────────────────────────────────────────────────────────────────
+Port {{ ssh_port }}
+AddressFamily any
+ListenAddress 0.0.0.0
+ListenAddress ::
+
+# Modern cipher/MAC/Kex selection. These are safe for OpenSSH 8.x+.
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
+
+# ── Authentication ────────────────────────────────────────────────────────────
+PermitRootLogin no
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+
+# Disable other auth methods that are rarely needed on a hardened server.
+KerberosAuthentication no
+GSSAPIAuthentication no
+UsePAM yes
+
+# ── Session limits ─────────────────────────────────────────────────────────────
+# Drop unauthenticated connections after 30 s.
+LoginGraceTime 30
+
+# Disconnect idle authenticated sessions after 5 minutes of silence.
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+# Limit brute-force attempts per connection before disconnecting.
+MaxAuthTries 3
+
+# Limit concurrent unauthenticated connections (start:rate:max).
+MaxStartups 10:30:60
+
+# ── Forwarding & tunnelling ───────────────────────────────────────────────────
+X11Forwarding no
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+GatewayPorts no
+PermitTunnel no
+
+# ── Environment & display ──────────────────────────────────────────────────────
+PrintMotd no
+PrintLastLog yes
+AcceptEnv LANG LC_*
+
+# ── Subsystems ─────────────────────────────────────────────────────────────────
+Subsystem sftp /usr/lib/openssh/sftp-server

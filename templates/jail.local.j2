@@ -1,0 +1,33 @@
+# /etc/fail2ban/jail.local — managed by Ansible, do not edit manually.
+#
+# Uses the nftables backend so fail2ban integrates with our nftables ruleset.
+# fail2ban creates its own high-priority table (inet f2b-table) that is
+# evaluated BEFORE our filter chains, so bans take effect without any changes
+# to nftables.conf.
+
+[DEFAULT]
+# Use nftables as the ban backend (matches our firewall stack).
+banaction     = nftables-multiport
+banaction_allports = nftables-allports
+
+# Read logs via systemd journal — no need to rely on syslog paths.
+backend = systemd
+
+# Ignore our own loopback and RFC-1918 ranges to avoid self-banning.
+ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+
+# Ban duration: 1 hour.
+bantime  = 1h
+
+# Look-back window: 10 minutes.
+findtime = 10m
+
+# Allow 5 failures before banning.
+maxretry = 5
+
+[sshd]
+enabled  = true
+port     = {{ ssh_port }}
+filter   = sshd
+logpath  = %(sshd_log)s
+maxretry = 5

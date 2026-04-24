@@ -1,0 +1,65 @@
+#!/usr/sbin/nft -f
+# ──────────────────────────────────────────────────────────────────────────────
+# Loaded atomically by: nftables.service (flush + reload on each apply).
+#
+# Design notes
+# ─────────────
+# INPUT   policy: drop   — only SSH on port {{ ssh_port }} is accepted from outside.
+# FORWARD policy: drop   — this host does not route packets by default.
+# OUTPUT  policy: accept — outbound traffic is unrestricted.
+#
+# ──────────────────────────────────────────────────────────────────────────────
+
+flush ruleset
+
+table inet filter {
+
+    # ── Inbound traffic ────────────────────────────────────────────────────────
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        # (1) Keep existing connections alive.
+        ct state established,related accept
+
+        # (2) Drop malformed/tracked-invalid packets early.
+        ct state invalid drop
+
+        # (3) Loopback is always trusted.
+        iif lo accept
+
+        # (4) ICMPv4 — allow essential control messages.
+        ip protocol icmp icmp type {
+            destination-unreachable,
+            time-exceeded,
+            parameter-problem
+        } accept
+
+        # (5) ICMPv6 — required for IPv6 neighbour discovery and path MTU.
+        ip6 nexthdr icmpv6 icmpv6 type {
+            destination-unreachable,
+            packet-too-big,
+            time-exceeded,
+            parameter-problem,
+            nd-router-advert,
+            nd-neighbor-solicit,
+            nd-neighbor-advert
+        } accept
+
+        # (6) SSH on the hardened port — the only inbound service exposed.
+        tcp dport {{ ssh_port }} accept
+
+        # Everything else is silently dropped by the chain policy.
+    }
+
+    # ── Forwarding ─────────────────────────────────────────────────────────────
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        # This host is not a router. All forwarded packets are dropped.
+    }
+
+    # ── Outbound traffic ───────────────────────────────────────────────────────
+    chain output {
+        type filter hook output priority filter; policy accept;
+        # Outbound traffic is unrestricted.
+    }
+}

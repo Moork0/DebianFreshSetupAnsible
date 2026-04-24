@@ -1,0 +1,193 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# Debian 13 server setup and hardening playbook
+# ──────────────────────────────────────────────────────────────────────────────
+- name: Harden Debian 13 server
+  hosts: all
+  become: true
+
+  handlers:
+    - name: Restart sshd
+      ansible.builtin.service:
+        name: ssh
+        state: restarted
+
+    - name: Restart nftables
+      ansible.builtin.service:
+        name: nftables
+        state: restarted
+
+    - name: Restart fail2ban
+      ansible.builtin.service:
+        name: fail2ban
+        state: restarted
+
+  tasks:
+
+    # ── Prerequisites ──────────────────────────────────────────────────────────
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - nftables
+          - fail2ban
+          - unattended-upgrades
+          - apt-listchanges
+          - htop
+          - vim
+        state: present
+
+    # ── SSH hardening ──────────────────────────────────────────────────────────
+    - name: Deploy hardened sshd_config
+      ansible.builtin.template:
+        src: templates/sshd_config.j2
+        dest: /etc/ssh/sshd_config.d/99-hardening.conf
+        owner: root
+        group: root
+        mode: "0600"
+        validate: /usr/sbin/sshd -t -f %s  # syntax check before deploy
+      notify: Restart sshd
+
+    # Apply the SSH restart now, then update Ansible's connection port.
+    - name: Flush handlers — restart sshd on new port
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for sshd to be ready on port {{ ssh_port }}
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        port: "{{ ssh_port }}"
+        timeout: 30
+      delegate_to: localhost
+      become: false
+
+    # Tell Ansible to use the new port for all remaining connections.
+    - name: Switch Ansible connection to port {{ ssh_port }}
+      ansible.builtin.set_fact:
+        ansible_port: "{{ ssh_port }}"
+
+    - name: Reset SSH connection to use new port
+      ansible.builtin.meta: reset_connection
+
+    # ── Firewall (nftables) ────────────────────────────────────────────────────
+    - name: Deploy nftables ruleset
+      ansible.builtin.template:
+        src: templates/nftables.conf.j2
+        dest: /etc/nftables.conf
+        owner: root
+        group: root
+        mode: "0640"
+        validate: /usr/sbin/nft -c -f %s   # dry-run check before deploy
+      notify: Restart nftables
+
+    - name: Enable nftables service
+      ansible.builtin.service:
+        name: nftables
+        enabled: true
+        state: started
+
+    # Apply nftables now so port 7809 is open before sshd restarts below.
+    - name: Flush handlers — apply nftables before SSH restart
+      ansible.builtin.meta: flush_handlers
+
+    # ── User management ────────────────────────────────────────────────────────
+    - name: Restrict su to the sudo group
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/su
+        regexp: '^#?\s*auth\s+required\s+pam_wheel\.so'
+        line: 'auth       required   pam_wheel.so use_uid group=sudo'
+        state: present
+        backrefs: false
+
+    # ── fail2ban ───────────────────────────────────────────────────────────────
+    - name: Deploy fail2ban jail configuration
+      ansible.builtin.template:
+        src: templates/jail.local.j2
+        dest: /etc/fail2ban/jail.local
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart fail2ban
+
+    - name: Enable and start fail2ban
+      ansible.builtin.service:
+        name: fail2ban
+        enabled: true
+        state: started
+
+    # ── Patch management ───────────────────────────────────────────────────────
+    - name: Configure unattended-upgrades (security updates only)
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          Unattended-Upgrade::Allowed-Origins {
+              "${distro_id}:${distro_codename}";
+              "${distro_id}:${distro_codename}-security";
+          };
+          Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+          Unattended-Upgrade::MinimalSteps "true";
+          Unattended-Upgrade::Remove-Unused-Dependencies "true";
+          Unattended-Upgrade::Automatic-Reboot "false";
+          Unattended-Upgrade::Mail "";
+          Unattended-Upgrade::MailReport "only-on-error";
+
+    - name: Enable daily auto-upgrade schedule
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+
+    # ── Filesystem hardening ───────────────────────────────────────────────────
+    # - name: Mount /tmp as tmpfs with noexec, nosuid, nodev
+    #   ansible.posix.mount:
+    #     path: /tmp
+    #     src: tmpfs
+    #     fstype: tmpfs
+    #     opts: defaults,noexec,nosuid,nodev,size=512m
+    #     state: mounted
+
+    - name: Get current sudo group members
+      ansible.builtin.getent:
+        database: group
+        key: sudo
+
+    - name: Build cron.allow from sudo group members
+      # cron.allow existence means ONLY listed users may use cron.
+      # Always includes root; also includes any user already in the sudo group.
+      ansible.builtin.copy:
+        dest: /etc/cron.allow
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          root
+          {% set members = ansible_facts.getent_group['sudo'][2] %}
+          {% if members %}
+          {% for user in members.split(',') | select | list %}
+          {{ user }}
+          {% endfor %}
+          {% endif %}
+
+    - name: Remove /etc/cron.deny if present
+      ansible.builtin.file:
+        path: /etc/cron.deny
+        state: absent
+
+    # ── Kernel hardening ───────────────────────────────────────────────────────
+    - name: Restrict /proc/kmsg and dmesg access to root
+      ansible.posix.sysctl:
+        name: kernel.dmesg_restrict
+        value: "1"
+        state: present
+        sysctl_file: /etc/sysctl.d/99-hardening.conf
+        reload: true
