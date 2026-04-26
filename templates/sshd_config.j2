@@ -33,7 +33,7 @@ ClientAliveInterval 300
 ClientAliveCountMax 2
 
 # Limit brute-force attempts per connection before disconnecting.
-MaxAuthTries 3
+# MaxAuthTries 3
 
 # Limit concurrent unauthenticated connections (start:rate:max).
 MaxStartups 10:30:60
@@ -49,6 +49,3 @@ PermitTunnel no
 PrintMotd no
 PrintLastLog yes
 AcceptEnv LANG LC_*
-
-# ── Subsystems ─────────────────────────────────────────────────────────────────
-Subsystem sftp /usr/lib/openssh/sftp-server
